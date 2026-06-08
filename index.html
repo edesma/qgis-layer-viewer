@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>QGIS Layer Viewer</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@9.2.4/ol.css">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body { display: flex; height: 100vh; overflow: hidden; font-family: system-ui, sans-serif; }
+
+        /* ── Panel ── */
+        #panel {
+            width: 300px; min-width: 220px; max-width: 520px;
+            background: #1e1e2e; color: #cdd6f4;
+            display: flex; flex-direction: column;
+            z-index: 10; box-shadow: 2px 0 12px rgba(0,0,0,.4);
+            position: relative; flex-shrink: 0;
+        }
+        /* Resize handle */
+        #panel-resize {
+            position: absolute; right: -4px; top: 0; bottom: 0;
+            width: 8px; cursor: ew-resize; z-index: 20;
+            background: transparent;
+        }
+        #panel-resize:hover, #panel-resize.dragging {
+            background: rgba(203,166,247,.25);
+        }
+
+        #panel-title {
+            padding: 16px 16px 2px;
+            font-size: 15px; font-weight: 600; letter-spacing: .03em; color: #cba6f7;
+            display: flex; align-items: baseline; gap: 8px;
+        }
+        #panel-version {
+            font-size: 10px; font-weight: 400; color: #9c9ca1;
+            letter-spacing: .04em; font-family: "Courier New", monospace;
+        }
+        #panel-subtitle {
+            padding: 0 16px 12px;
+            font-size: 11px; color: #6c7086;
+            border-bottom: 1px solid #313244;
+        }
+
+        /* ── Mode buttons ── */
+        #mode-selector { padding: 10px 14px 6px; display: flex; gap: 8px; }
+        .mode-btn {
+            flex: 1; padding: 6px 4px;
+            background: #2a2a3e; border: 1px solid #45475a;
+            border-radius: 7px; color: #6c7086;
+            font-size: 11px; font-weight: 600; cursor: pointer;
+            text-align: center; transition: all .15s;
+        }
+        .mode-btn.active { background: #313244; border-color: #cba6f7; color: #cba6f7; }
+
+        /* ── Drop zone ── */
+        #drop-zone {
+            margin: 6px 14px 10px;
+            border: 2px dashed #45475a; border-radius: 10px;
+            padding: 16px 12px; text-align: center; cursor: pointer;
+            transition: border-color .2s, background .2s;
+            font-size: 12px; color: #6c7086;
+        }
+        #drop-zone:hover, #drop-zone.drag-over {
+            border-color: #cba6f7; background: #2a2a3e; color: #cdd6f4;
+        }
+        #drop-zone svg { display: block; margin: 0 auto 6px; opacity: .5; }
+        #drop-zone input { display: none; }
+        #drop-hint { font-size: 11px; margin-top: 4px; color: #45475a; }
+
+        /* ── Pending ── */
+        #pending-list { padding: 0 14px; }
+        .pending-item {
+            display: flex; align-items: center; gap: 6px;
+            padding: 7px 8px 7px 10px; margin-bottom: 6px;
+            background: #2a2a3e; border-radius: 8px;
+            border-left: 3px solid #f9e2af;
+        }
+        .pending-item span {
+            flex: 1; font-size: 12px; color: #f9e2af;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            min-width: 0;
+        }
+        .pending-cancel {
+            background: none; border: none; cursor: pointer;
+            color: #6c7086; padding: 2px; line-height: 0;
+            border-radius: 4px; flex-shrink: 0; transition: color .15s;
+        }
+        .pending-cancel:hover { color: #f38ba8; }
+
+        /* ── Layer list ── */
+        #layer-list-header {
+            padding: 8px 16px 4px;
+            font-size: 11px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: .08em; color: #6c7086;
+        }
+        #layer-list { flex: 1; overflow-y: auto; padding: 0 14px 14px; }
+
+        /* ── Layer item ── */
+        .layer-item {
+            background: #2a2a3e; border-radius: 8px;
+            margin-bottom: 6px; overflow: hidden;
+            border-left: 3px solid transparent;
+            transition: opacity .15s;
+        }
+        .layer-item.point   { border-color: #89dceb; }
+        .layer-item.line    { border-color: #a6e3a1; }
+        .layer-item.polygon { border-color: #fab387; }
+        .layer-item.dragging { opacity: .4; }
+        .layer-item.drag-over { outline: 2px dashed #cba6f7; outline-offset: -2px; }
+
+        .layer-header {
+            display: flex; align-items: center; gap: 5px;
+            padding: 9px 8px; cursor: pointer; transition: background .15s;
+        }
+        .layer-header:hover { background: #313244; }
+
+        .drag-handle {
+            color: #45475a; font-size: 13px; cursor: grab;
+            flex-shrink: 0; line-height: 1; padding: 0 2px;
+            user-select: none;
+        }
+        .drag-handle:active { cursor: grabbing; }
+
+        .layer-type-badge {
+            font-size: 10px; padding: 1px 5px;
+            border-radius: 4px; font-weight: 600; flex-shrink: 0;
+        }
+        .point   .layer-type-badge { background: #89dceb22; color: #89dceb; }
+        .line    .layer-type-badge { background: #a6e3a122; color: #a6e3a1; }
+        .polygon .layer-type-badge { background: #fab38722; color: #fab387; }
+
+        .layer-name {
+            flex: 1; font-size: 12px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            min-width: 0;
+        }
+        .expand-chevron {
+            color: #9d9c99; font-size: 18px; flex-shrink: 0;
+            transition: transform .2s; line-height: 1;
+            user-select: none;
+        }
+        .layer-item.expanded .expand-chevron { transform: rotate(180deg); }
+
+        .layer-btn {
+            background: none; border: none; cursor: pointer;
+            color: #6c7086; padding: 2px; border-radius: 4px;
+            line-height: 0; transition: color .15s; flex-shrink: 0;
+        }
+        .layer-btn:hover { color: #cdd6f4; }
+        .layer-btn.hidden-btn { color: #f38ba8; opacity: .75; }
+
+        /* ── Collapsible details ── */
+        .layer-details {
+            max-height: 0; overflow: hidden;
+            transition: max-height .25s ease;
+            border-top: 1px solid transparent;
+        }
+        .layer-item.expanded .layer-details {
+            max-height: 220px; border-top-color: #313244;
+        }
+        .layer-details-inner { padding: 10px 10px 12px; }
+
+        .ctrl-row {
+            display: flex; align-items: center; gap: 8px;
+            margin-bottom: 8px; font-size: 11px; color: #a6adc8;
+        }
+        .ctrl-row .ctrl-label { width: 52px; flex-shrink: 0; }
+        .ctrl-row input[type=range] { flex: 1; accent-color: #cba6f7; cursor: pointer; }
+        .opacity-val { width: 32px; text-align: right; flex-shrink: 0; color: #cdd6f4; }
+
+        .ctrl-row.disabled { opacity: .35; pointer-events: none; }
+        .ctrl-row input[type=checkbox] { accent-color: #cba6f7; cursor: pointer; }
+
+        .layer-abstract { font-size: 11px; color: #6c7086; line-height: 1.5; font-style: italic; }
+
+
+        /* ── Map tip tooltip ── */
+        #map-tip {
+            position: fixed;
+            display: none;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            border: 1px solid #45475a;
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-size: 12px;
+            font-family: system-ui, sans-serif;
+            max-width: 260px;
+            min-width: 120px;
+            box-shadow: 0 4px 20px rgba(0,0,0,.5);
+            z-index: 1000;
+            pointer-events: none;
+            line-height: 1.5;
+        }
+        .tip-layer  { font-size: 10px; color: #6c7086; margin-bottom: 5px;
+                      text-transform: uppercase; letter-spacing: .06em; }
+        .tip-value  { font-size: 14px; font-weight: 600; color: #cba6f7;
+                      margin-bottom: 4px; word-break: break-word; }
+        .tip-row    { display: flex; gap: 6px; font-size: 11px; margin-bottom: 2px; }
+        .tip-key    { color: #6c7086; flex-shrink: 0; }
+        .tip-val    { color: #cdd6f4; word-break: break-word; }
+        .tip-divider{ border: none; border-top: 1px solid #313244;
+                      margin: 6px 0; }
+
+
+
+        /* ── Panel footer ── */
+        #panel-footer {
+            padding: 8px 16px;
+            border-top: 1px solid #313244;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+        #panel-footer-version {
+            font-size: 10px;
+            color: #45475a;
+            font-family: "Courier New", monospace;
+        }
+        #panel-footer-sep {
+            font-size: 10px;
+            color: #313244;
+        }
+        #panel-footer-link {
+            font-size: 10px;
+            color: #cba6f7;
+            text-decoration: none;
+            transition: color .15s;
+        }
+        #panel-footer-link:hover {
+            color: #f5f5f5;
+            text-decoration: underline;
+        }
+        /* ── Export bar ── */
+        #export-bar {
+            padding: 10px 14px;
+            border-top: 1px solid #313244;
+        }
+        #export-btn {
+            width: 100%; padding: 8px;
+            background: #313244; border: 1px solid #45475a;
+            border-radius: 8px; color: #cdd6f4;
+            font-size: 12px; font-weight: 600; cursor: pointer;
+            transition: background .15s, border-color .15s;
+        }
+        #export-btn:hover { background: #45475a; border-color: #cba6f7; color: #cba6f7; }
+        #export-btn:disabled { opacity: .4; cursor: default; }
+        /* ── Legend ── */
+        #legend-header {
+            padding: 8px 16px;
+            font-size: 11px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: .08em; color: #6c7086;
+            cursor: pointer; user-select: none;
+            display: flex; justify-content: space-between; align-items: center;
+            border-top: 1px solid #313244; transition: color .15s;
+        }
+        #legend-header:hover { color: #cdd6f4; }
+        #legend-chevron { transition: transform .2s; font-size: 14px; color: #9d9c99; }
+        #legend-header.collapsed #legend-chevron { transform: rotate(-90deg); }
+        #legend-body { overflow-y: auto; max-height: 260px; }
+        #legend-body.hidden { display: none; }
+
+        .legend-group { padding: 6px 14px 10px; }
+        .legend-group-name {
+            font-size: 11px; font-weight: 600; color: #cba6f7;
+            margin-bottom: 5px; padding-bottom: 3px;
+            border-bottom: 1px solid #313244;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .legend-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 2px 0; font-size: 11px; color: #a6adc8;
+            min-height: 18px;
+        }
+        .legend-swatch { flex-shrink: 0; display: flex; align-items: center; }
+        .legend-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+
+        /* ── Table viewer ── */
+        #table-modal {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            height: 38vh; min-height: 200px;
+            background: #1e1e2e;
+            border-top: 2px solid #45475a;
+            z-index: 1500;
+            display: flex; flex-direction: column;
+            box-shadow: 0 -6px 24px rgba(0,0,0,.5);
+        }
+        #table-modal.hidden { display: none; }
+
+        #table-modal-header {
+            display: flex; align-items: center; gap: 10px;
+            padding: 8px 14px;
+            border-bottom: 1px solid #313244;
+            flex-shrink: 0;
+        }
+        #table-modal-title {
+            font-size: 13px; font-weight: 600; color: #cba6f7;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            flex-shrink: 0; max-width: 200px;
+        }
+        #table-search {
+            flex: 1; background: #313244; border: 1px solid #45475a;
+            border-radius: 6px; padding: 5px 10px;
+            color: #cdd6f4; font-size: 12px; outline: none;
+            transition: border-color .15s;
+        }
+        #table-search:focus { border-color: #cba6f7; }
+        #table-count {
+            font-size: 11px; color: #6c7086; flex-shrink: 0; white-space: nowrap;
+        }
+
+        #table-csv-btn {
+            background: #313244; border: 1px solid #45475a;
+            border-radius: 6px; color: #a6adc8;
+            font-size: 11px; font-weight: 600; cursor: pointer;
+            padding: 4px 8px; display: flex; align-items: center; gap: 4px;
+            transition: all .15s; flex-shrink: 0;
+        }
+        #table-csv-btn:hover { background: #45475a; border-color: #a6e3a1; color: #a6e3a1; }
+        #table-close-btn {
+            background: none; border: none; cursor: pointer;
+            color: #6c7086; font-size: 16px; line-height: 1;
+            padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+            transition: color .15s;
+        }
+        #table-close-btn:hover { color: #f38ba8; }
+
+        #table-wrapper {
+            flex: 1; overflow: auto;
+        }
+        #table-main {
+            width: 100%; border-collapse: collapse;
+            font-size: 12px; font-family: system-ui, sans-serif;
+        }
+        #table-main thead {
+            position: sticky; top: 0;
+            background: #181825; z-index: 1;
+        }
+        #table-main th {
+            padding: 7px 12px; text-align: left;
+            color: #6c7086; font-weight: 600; font-size: 11px;
+            text-transform: uppercase; letter-spacing: .05em;
+            cursor: pointer; user-select: none; white-space: nowrap;
+            border-bottom: 1px solid #313244;
+            transition: color .15s;
+        }
+        #table-main th:hover { color: #cdd6f4; }
+        #table-main td {
+            padding: 6px 12px; color: #cdd6f4;
+            border-bottom: 1px solid #1e1e2e;
+            white-space: nowrap; overflow: hidden;
+            text-overflow: ellipsis; max-width: 220px;
+        }
+        #table-main td.num { text-align: right; color: #89dceb; font-variant-numeric: tabular-nums; }
+        #table-main td.null-val { color: #45475a; font-style: italic; }
+        #table-main tbody tr { cursor: pointer; transition: background .1s; }
+        #table-main tbody tr:nth-child(even) { background: #181825; }
+        #table-main tbody tr:hover { background: #313244; }
+        #table-main tbody tr.active { background: #3d3521; outline: 1px solid #f9e2af; }
+
+        /* ── Basemap switcher ── */
+        #basemap-control {
+            position: absolute; top: 10px; right: 10px; z-index: 100;
+        }
+        #basemap-btn {
+            width: 36px; height: 36px;
+            background: #1e1e2e; border: 1px solid #45475a;
+            border-radius: 8px; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            color: #a6adc8; box-shadow: 0 2px 8px rgba(0,0,0,.5);
+            transition: all .15s;
+        }
+        #basemap-btn:hover, #basemap-btn.open {
+            background: #313244; border-color: #cba6f7; color: #cba6f7;
+        }
+        #basemap-panel {
+            position: absolute; top: 44px; right: 0;
+            background: #1e1e2e; border: 1px solid #45475a;
+            border-radius: 12px; padding: 12px 12px 8px;
+            box-shadow: 0 6px 24px rgba(0,0,0,.6);
+            min-width: 284px;
+        }
+        #basemap-panel.hidden { display: none; }
+        #basemap-panel-title {
+            font-size: 10px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: .08em; color: #6c7086;
+            margin-bottom: 10px; padding-bottom: 6px;
+            border-bottom: 1px solid #313244;
+        }
+        .basemap-grid {
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+        }
+        .basemap-item {
+            cursor: pointer; border-radius: 8px;
+            border: 2px solid transparent;
+            overflow: hidden; transition: border-color .15s, transform .1s;
+            background: #181825;
+        }
+        .basemap-item:hover { border-color: #45475a; transform: scale(1.03); }
+        .basemap-item.active { border-color: #cba6f7; }
+        .basemap-item img {
+            width: 100%; height: 54px;
+            object-fit: cover; display: block;
+        }
+        .basemap-item-label {
+            font-size: 10px; font-weight: 600; color: #6c7086;
+            padding: 3px 5px 4px; text-align: center;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            background: #181825;
+        }
+        .basemap-item.active .basemap-item-label { color: #cba6f7; }
+        /* ── Edit modal ── */
+        .modal-overlay {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,.6);
+            backdrop-filter: blur(3px);
+            z-index: 2000;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .modal-overlay.hidden { display: none; }
+        .modal {
+            background: #1e1e2e; border: 1px solid #45475a;
+            border-radius: 14px; padding: 24px 26px;
+            width: 340px; max-width: 92vw;
+            box-shadow: 0 12px 40px rgba(0,0,0,.6);
+        }
+        .modal-title {
+            font-size: 15px; font-weight: 600; color: #cba6f7;
+            margin-bottom: 20px;
+        }
+        .modal-field {
+            display: flex; flex-direction: column; gap: 6px;
+            margin-bottom: 18px;
+        }
+        .modal-field span {
+            font-size: 11px; font-weight: 600; text-transform: uppercase;
+            letter-spacing: .06em; color: #6c7086;
+        }
+        .modal-field input[type="text"] {
+            background: #313244; border: 1px solid #45475a;
+            border-radius: 8px; padding: 8px 12px;
+            color: #cdd6f4; font-size: 13px; font-family: system-ui, sans-serif;
+            outline: none; transition: border-color .15s;
+        }
+        .modal-field input[type="text"]:focus { border-color: #cba6f7; }
+        .modal-range-row {
+            display: flex; align-items: center; gap: 10px;
+        }
+        .modal-range-row input[type="range"] {
+            flex: 1; accent-color: #cba6f7; cursor: pointer;
+        }
+        .modal-range-val {
+            font-size: 13px; color: #cdd6f4; width: 36px;
+            text-align: right; flex-shrink: 0;
+        }
+        .modal-footer {
+            display: flex; justify-content: flex-end; gap: 10px;
+            margin-top: 8px;
+        }
+        .modal-btn {
+            padding: 8px 20px; border-radius: 8px; border: none;
+            font-size: 13px; font-weight: 600; cursor: pointer;
+            transition: background .15s;
+        }
+        .modal-btn.cancel {
+            background: #313244; color: #6c7086;
+        }
+        .modal-btn.cancel:hover { background: #45475a; color: #cdd6f4; }
+        .modal-btn.accept {
+            background: #cba6f7; color: #1e1e2e;
+        }
+        .modal-btn.accept:hover { background: #d5baff; }
+        /* ── Map ── */
+        #map { flex: 1; position: relative; }
+    </style>
+</head>
+<body>
+<div id="panel">
+    <div id="panel-resize"></div>
+    <div id="panel-title">🗺 QGIS Layer Viewer<span id="panel-version">v1.0.0</span></div>
+    <div id="panel-subtitle">Drop files to preview — nothing is saved</div>
+
+    <div id="mode-selector">
+        <div class="mode-btn active" id="btn-pair" onclick="setMode('pair')">🗂 GeoJSON + QLR</div>
+        <div class="mode-btn"        id="btn-url"  onclick="setMode('url')">🌐 QLR + web URL</div>
+    </div>
+
+    <div id="drop-zone">
+        <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+        </svg>
+        <span id="drop-label">Drop a <strong>.geojson</strong> or <strong>.qlr</strong></span>
+        <div id="drop-hint">Files are matched by name</div>
+        <input type="file" id="file-input" accept=".geojson,.qlr,.qview">
+    </div>
+
+    <div id="pending-list"></div>
+    <div id="layer-list-header">Layers</div>
+    <div id="layer-list"></div>
+    <div id="export-bar">
+        <button id="export-btn" onclick="exportQview()" title="Save all layers as a portable .qview file">
+            ⬇ Export .qview
+        </button>
+    </div>
+    <div id="legend-header" class="collapsed" onclick="toggleLegend()">
+        Legend <span id="legend-chevron">▾</span>
+    </div>
+    <div id="legend-body" class="hidden"></div>
+    <div id="panel-footer">
+        <span id="panel-footer-version">v1.0.0</span>
+        <span id="panel-footer-sep">·</span>
+        <a id="panel-footer-link" href="https://yourblog.com/qgis-layer-viewer" target="_blank" rel="noopener">About &amp; Help</a>
+    </div>
+</div>
+<div id="map">
+    <div id="basemap-control">
+        <button id="basemap-btn" onclick="toggleBasemapPanel()" title="Switch basemap">
+            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+            </svg>
+        </button>
+        <div id="basemap-panel" class="hidden">
+            <div id="basemap-panel-title">Basemap</div>
+            <div class="basemap-grid" id="basemap-grid"></div>
+        </div>
+    </div>
+</div>
+<div id="map-tip"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/ol@9.2.4/dist/ol.js"></script>
+<script src="qgis_viewer.js"></script>
+
+
+<div id="table-modal" class="hidden">
+    <div id="table-modal-header">
+        <span id="table-modal-title">Layer</span>
+        <input type="text" id="table-search" placeholder="🔍 Search all columns…"
+            oninput="filterTable(this.value)">
+        <span id="table-count"></span>
+        <button id="table-csv-btn" onclick="exportTableCSV()" title="Export visible rows to CSV">
+            <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            CSV
+        </button>
+        <button id="table-close-btn" onclick="closeTableModal()" title="Close table (Esc)">✕</button>
+    </div>
+    <div id="table-wrapper">
+        <table id="table-main">
+            <thead id="table-thead"></thead>
+            <tbody id="table-tbody"></tbody>
+        </table>
+    </div>
+</div>
+
+<div id="edit-modal-overlay" class="modal-overlay hidden" onclick="handleOverlayClick(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+        <div class="modal-title">✏ Edit Layer</div>
+        <label class="modal-field">
+            <span>Layer name</span>
+            <input type="text" id="edit-name-input" autocomplete="off">
+        </label>
+        <div class="modal-field" id="edit-fontsize-row">
+            <span id="edit-fontsize-unit">Label font size</span>
+            <div class="modal-range-row">
+                <input type="range" id="edit-fontsize-range" min="6" max="36" step="1"
+                    oninput="document.getElementById('edit-fontsize-val').textContent=this.value+'px'">
+                <span class="modal-range-val" id="edit-fontsize-val">10px</span>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="modal-btn cancel" onclick="closeEditModal()">Cancel</button>
+            <button class="modal-btn accept" onclick="acceptEdit()">Apply</button>
+        </div>
+    </div>
+</div>
+</body>
+</html>
